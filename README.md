@@ -48,7 +48,7 @@ insmod lazy_cma.ko          # creates /dev/lazy_cma
 # Allocate 256 MB
 lazy_cma_tool -a 256
 
-# Allocate 256 MB with custom /proc/iomem name (e.g. to fake crashkernel=)
+# Allocate 256 MB with custom /proc/iomem name (e.g. for lazy kdump)
 lazy_cma_tool -a 256 -n "Crash kernel"
 
 # Allocate 256 MB from NUMA node 2 (e.g. CXL memory)

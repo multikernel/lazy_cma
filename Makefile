@@ -2,7 +2,7 @@
 
 ifneq ($(KERNELRELEASE),)
 
-obj-m := lazy_cma.o
+obj-m := lazy_cma.o lazy_kdump.o
 
 else
 
