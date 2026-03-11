@@ -57,7 +57,7 @@ struct lazy_cma_buffer {
 	int node;			/* NUMA node; -1 = any */
 	const char *name;		/* iomem resource name */
 	phys_addr_t phys_addr;
-	struct resource *iomem;
+	struct resource iomem;
 };
 
 static LIST_HEAD(lazy_cma_buffers);
@@ -103,7 +103,7 @@ static struct page *lazy_cma_try_zone(struct zone *zone,
 		    pfn_valid(candidate + nr_pages - 1)) {
 			ret = alloc_contig_range(candidate,
 						 candidate + nr_pages,
-						 ACR_FLAGS_NONE,
+						 ACR_FLAGS_CMA,
 						 GFP_KERNEL);
 			if (ret == 0) {
 				pr_info("allocated pfn range [%lx-%lx) from zone %s\n",
@@ -155,11 +155,7 @@ static struct page *lazy_cma_alloc_pages(unsigned long nr_pages, int node)
 
 static void lazy_cma_free_buffer(struct lazy_cma_buffer *buffer)
 {
-	if (buffer->iomem) {
-		remove_resource(buffer->iomem);
-		kfree(buffer->iomem);
-	}
-
+	remove_resource(&buffer->iomem);
 	free_contig_range(page_to_pfn(buffer->pages), buffer->nr_pages);
 
 	pr_info("freed %lu bytes at %pa\n", buffer->len, &buffer->phys_addr);
@@ -205,18 +201,17 @@ static int lazy_cma_allocate(unsigned long len, const char *name, int node,
 	buffer->node = node;
 	buffer->phys_addr = page_to_phys(pages);
 
-	buffer->iomem = kzalloc(sizeof(*buffer->iomem), GFP_KERNEL);
-	if (buffer->iomem) {
-		buffer->iomem->start = buffer->phys_addr;
-		buffer->iomem->end = buffer->phys_addr + len - 1;
-		buffer->iomem->name = buffer->name;
-		buffer->iomem->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
-		if (insert_resource(&iomem_resource, buffer->iomem)) {
-			pr_warn("could not register iomem region at %pa\n",
-				&buffer->phys_addr);
-			kfree(buffer->iomem);
-			buffer->iomem = NULL;
-		}
+	buffer->iomem.start = buffer->phys_addr;
+	buffer->iomem.end = buffer->phys_addr + len - 1;
+	buffer->iomem.name = buffer->name;
+	buffer->iomem.flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+	if (insert_resource(&iomem_resource, &buffer->iomem)) {
+		pr_err("could not register iomem region at %pa\n",
+		       &buffer->phys_addr);
+		free_contig_range(page_to_pfn(pages), nr_pages);
+		kfree(buffer->name);
+		kfree(buffer);
+		return -EBUSY;
 	}
 
 	mutex_lock(&lazy_cma_buffers_lock);
@@ -229,19 +224,17 @@ static int lazy_cma_allocate(unsigned long len, const char *name, int node,
 	return 0;
 }
 
-static void lazy_cma_update_iomem(struct lazy_cma_buffer *buffer)
+static int lazy_cma_update_iomem(struct lazy_cma_buffer *buffer)
 {
-	if (buffer->iomem) {
-		remove_resource(buffer->iomem);
-		buffer->iomem->start = buffer->phys_addr;
-		buffer->iomem->end = buffer->phys_addr + buffer->len - 1;
-		if (insert_resource(&iomem_resource, buffer->iomem)) {
-			pr_warn("could not re-register iomem at %pa\n",
-				&buffer->phys_addr);
-			kfree(buffer->iomem);
-			buffer->iomem = NULL;
-		}
+	remove_resource(&buffer->iomem);
+	buffer->iomem.start = buffer->phys_addr;
+	buffer->iomem.end = buffer->phys_addr + buffer->len - 1;
+	if (insert_resource(&iomem_resource, &buffer->iomem)) {
+		pr_err("could not re-register iomem at %pa\n",
+		       &buffer->phys_addr);
+		return -EBUSY;
 	}
+	return 0;
 }
 
 static int lazy_cma_grow(struct lazy_cma_buffer *buffer,
@@ -254,7 +247,7 @@ static int lazy_cma_grow(struct lazy_cma_buffer *buffer,
 
 	/* Try to extend in-place by allocating adjacent pages */
 	ret = alloc_contig_range(extend_pfn, old_pfn + new_nr_pages,
-				 ACR_FLAGS_NONE, GFP_KERNEL);
+				 ACR_FLAGS_CMA, GFP_KERNEL);
 	if (ret == 0) {
 		pr_info("grew in-place pfn range [%lx-%lx) -> [%lx-%lx)\n",
 			old_pfn, extend_pfn, old_pfn, old_pfn + new_nr_pages);
@@ -341,8 +334,9 @@ static long lazy_cma_ioctl_resize(unsigned long arg)
 		ret = 0;
 	}
 
+	if (!ret)
+		ret = lazy_cma_update_iomem(buffer);
 	if (!ret) {
-		lazy_cma_update_iomem(buffer);
 		resize.phys_addr = buffer->phys_addr;
 		resize.len = buffer->len;
 	}
