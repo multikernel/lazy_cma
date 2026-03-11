@@ -128,8 +128,6 @@ static struct page *lazy_cma_alloc_pages(unsigned long nr_pages, int node)
 	static const enum zone_type zone_order[] = {
 		ZONE_MOVABLE,
 		ZONE_NORMAL,
-		ZONE_DMA32,
-		ZONE_DMA,
 	};
 	int i;
 
